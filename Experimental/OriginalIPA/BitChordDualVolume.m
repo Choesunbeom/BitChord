@@ -340,8 +340,18 @@ static void BCHDidMoveHook(id self, SEL cmd) {
 }
 static void BCHSwizzle(Class cls, SEL sel, IMP newImp, IMP *original) {
     Method m = class_getInstanceMethod(cls, sel);
-    if (m) *original = method_setImplementation(m, newImp);
-    else NSLog(@"[BCHDualVolume] Missing selector %@", NSStringFromSelector(sel));
+    if (!m) {
+        NSLog(@"[BCHDualVolume] Missing selector %@", NSStringFromSelector(sel));
+        return;
+    }
+    // Swift subclasses may inherit UIView's didMoveToWindow. Never swap
+    // the superclass's method for ALL UIView instances.
+    IMP before = method_getImplementation(m);
+    if (class_addMethod(cls, sel, newImp, method_getTypeEncoding(m))) {
+        *original = before;  // subclass-local override of inherited method
+    } else {
+        *original = method_setImplementation(m, newImp);
+    }
 }
 __attribute__((constructor)) static void BCHLoad(void) {
     @autoreleasepool {
