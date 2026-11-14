@@ -1,0 +1,57 @@
+name: Build BitChord-KR original IPA dual volume dylib
+on:
+  push:
+    branches: [feature/dual-volume-original-ipa]
+    paths:
+      - 'Experimental/OriginalIPA/**'
+      - '.github/workflows/build-original-ipa-dual-volume.yml'
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  dylib:
+    runs-on: xcode-27
+    timeout-minutes: 25
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify Xcode and iOS SDK
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+      - name: Compile original IPA runtime extension
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+          xcrun --sdk iphoneos clang \
+            -x objective-c -arch arm64 -target arm64-apple-ios17.0 \
+            -isysroot "$SDK" -fobjc-arc -fblocks -O2 -dynamiclib \
+            -install_name '@executable_path/Frameworks/BitChordDualVolume.dylib' \
+            -Wl,-undefined,dynamic_lookup \
+            -framework Foundation -framework UIKit -framework AVFoundation \
+            -framework QuartzCore \
+            Experimental/OriginalIPA/BitChordDualVolume.m \
+            -o BitChordDualVolume.dylib
+          file BitChordDualVolume.dylib
+          xcrun otool -L BitChordDualVolume.dylib
+          shasum -a 256 BitChordDualVolume.dylib
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: BitChord-original-IPA-dual-volume-dylib
+          path: BitChordDualVolume.dylib
+          retention-days: 30
+      - name: Publish dylib for local original IPA patch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG='bitchord-original-ipa-dual-volume-v1'
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title 'BitChord-KR 1.0.2 original IPA volume module' \
+              --notes 'Original uploaded BitChord-KR v1.0.2 build 40 only. Adds a long-hold, haptic orange app-only volume overlay without replacing the app. This asset is only the compiled dylib; use with your own original IPA and re-sign.'
+          fi
+          gh release upload "$TAG" BitChordDualVolume.dylib --clobber
