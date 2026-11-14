@@ -18,10 +18,14 @@
 static NSString *const kBCHGainKey = @"com.choesunbeom.BitChord.dualVolume.gain";
 static const void *kBCHBaseGainKey = &kBCHBaseGainKey;
 static const void *kBCHOverlayKey = &kBCHOverlayKey;
+static const void *kBCHOriginalMuteKey = &kBCHOriginalMuteKey;
 static float gAppGain = 1.0f;
 static NSHashTable<AVPlayer *> *gActivePlayers;
 static void (*origSetVolume)(id, SEL, float);
 static float (*origGetVolume)(id, SEL);
+static void (*origSetMuted)(id, SEL, BOOL);
+static BOOL (*origIsMuted)(id, SEL);
+static id (*origQueueInit)(id, SEL);
 static void (*origPlay)(id, SEL);
 static void (*origPlayRate)(id, SEL, float);
 static id (*origPlayerInit)(id, SEL);
@@ -41,10 +45,22 @@ static float BCHBaseGain(AVPlayer *player) {
     return saved ? saved.floatValue :
         (origGetVolume ? origGetVolume(player, @selector(volume)) : 1.0f);
 }
+static BOOL BCHBaseMute(AVPlayer *p) {
+    NSNumber *saved = objc_getAssociatedObject(p, kBCHOriginalMuteKey);
+    return saved ? saved.boolValue :
+        (origIsMuted ? origIsMuted(p,@selector(isMuted)) : NO);
+}
 static void BCHApplyToPlayer(AVPlayer *player) {
-    if (player && origSetVolume) {
+    if (!player) return;
+    if (origSetVolume) {
         origSetVolume(player, @selector(setVolume:),
                       BCHClamp(BCHBaseGain(player) * gAppGain));
+    }
+    // At 0% also use AVPlayer's separate mute gate; this catches players
+    // whose normal volume is bypassed by an audioMix/MTAudioProcessingTap.
+    if (origSetMuted) {
+        origSetMuted(player, @selector(setMuted:),
+                     gAppGain < 0.0001f || BCHBaseMute(player));
     }
 }
 static void BCHRegisterPlayer(AVPlayer *player) {
@@ -56,6 +72,16 @@ static void BCHRegisterPlayer(AVPlayer *player) {
     }
     @synchronized (gActivePlayers) { [gActivePlayers addObject:player]; }
     BCHApplyToPlayer(player);
+}
+static void BCHSetMuted(id self, SEL cmd, BOOL value) {
+    objc_setAssociatedObject(self, kBCHOriginalMuteKey, @(value),
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    @synchronized (gActivePlayers) { [gActivePlayers addObject:self]; }
+    if(origSetMuted)origSetMuted(self,cmd,gAppGain < 0.0001f || value);
+}
+static BOOL BCHIsMuted(id self, SEL cmd) {
+    NSNumber *n=objc_getAssociatedObject(self,kBCHOriginalMuteKey);
+    return n?n.boolValue:(origIsMuted?origIsMuted(self,cmd):NO);
 }
 static void BCHSetVolume(id self, SEL cmd, float value) {
     objc_setAssociatedObject(self, kBCHBaseGainKey, @(BCHClamp(value)),
@@ -87,6 +113,11 @@ static id BCHPlayerInit(id self, SEL cmd) {
 static id BCHInitWithItem(id self, SEL cmd, AVPlayerItem *item) {
     id result=origInitWithPlayerItem?origInitWithPlayerItem(self,cmd,item):nil;
     if (result) BCHRegisterPlayer(result);
+    return result;
+}
+static id BCHQueueInit(id self,SEL cmd) {
+    id result=origQueueInit?origQueueInit(self,cmd):nil;
+    if(result)BCHRegisterPlayer(result);
     return result;
 }
 static id BCHQueueInitWithItems(id self, SEL cmd, NSArray<AVPlayerItem*> *items) {
@@ -129,6 +160,7 @@ typedef NS_ENUM(NSInteger, BCHTouchMode) {
 @property (nonatomic, strong) CALayer *orangeBackground;
 @property (nonatomic, strong) CALayer *orangeFill;
 @property (nonatomic, strong) CALayer *orangeDot;
+@property (nonatomic, strong) CATextLayer *volumeDiagnostics;
 @property (nonatomic, assign) BCHTouchMode mode;
 @property (nonatomic, assign) CGPoint initialTouch;
 @property (nonatomic, assign) CGFloat displayedGain;
@@ -196,6 +228,12 @@ typedef NS_ENUM(NSInteger, BCHTouchMode) {
     if (@available(iOS 15.0, *)) _displayLink.preferredFrameRateRange =
         CAFrameRateRangeMake(1, 10, 10);
     [_displayLink addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
+    _volumeDiagnostics=[CATextLayer layer];
+    _volumeDiagnostics.contentsScale=UIScreen.mainScreen.scale;
+    _volumeDiagnostics.fontSize=10;
+    _volumeDiagnostics.alignmentMode=kCAAlignmentCenter;
+    _volumeDiagnostics.foregroundColor=UIColor.orangeColor.CGColor;
+    [self.layer addSublayer:_volumeDiagnostics];
     [self updateOrangeBar];
     return self;
 }
@@ -249,6 +287,14 @@ typedef NS_ENUM(NSInteger, BCHTouchMode) {
     CGFloat x = 4 + fmax(0, fmin(width-dot/2, width*gain-dot/2));
     self.orangeDot.frame = CGRectMake(x, lineY+(thickness-dot)/2, dot, dot);
     self.orangeDot.cornerRadius = dot/2;
+    // Only visible while holding. If the app audio is unchanged, this
+    // exposes whether the actual AVPlayer decks have been registered.
+    NSUInteger count=0;
+    @synchronized(gActivePlayers){count=gActivePlayers.allObjects.count;}
+    self.volumeDiagnostics.frame=CGRectMake(0,MAX(0,centerY-27),self.bounds.size.width,16);
+    self.volumeDiagnostics.string=[NSString stringWithFormat:@"BitChord %d%% · 재생기 %lu",
+                                 (int)roundf(gain*100),(unsigned long)count];
+    self.volumeDiagnostics.hidden=self.mode != BCHTouchApp;
     self.accessibilityValue =
         [NSString stringWithFormat:@"BitChord %d percent", (int)roundf(gain*100)];
 }
@@ -401,6 +447,10 @@ __attribute__((constructor)) static void BCHLoad(void) {
                    (IMP *)&origSetVolume);
         BCHSwizzle(player, @selector(volume), (IMP)BCHGetVolume,
                    (IMP *)&origGetVolume);
+        BCHSwizzle(player, @selector(setMuted:), (IMP)BCHSetMuted,
+                   (IMP *)&origSetMuted);
+        BCHSwizzle(player, @selector(isMuted), (IMP)BCHIsMuted,
+                   (IMP *)&origIsMuted);
         BCHSwizzle(player, @selector(play), (IMP)BCHPlay,
                    (IMP *)&origPlay);
         BCHSwizzle(player, @selector(playImmediatelyAtRate:), (IMP)BCHPlayRate,
@@ -414,6 +464,8 @@ __attribute__((constructor)) static void BCHLoad(void) {
         BCHSwizzle(player, @selector(replaceCurrentItemWithPlayerItem:),
                    (IMP)BCHReplaceItem,(IMP *)&origReplaceItem);
         Class queue=AVQueuePlayer.class;
+        BCHSwizzle(queue,@selector(init),(IMP)BCHQueueInit,
+                   (IMP *)&origQueueInit);
         BCHSwizzle(queue,@selector(initWithItems:),(IMP)BCHQueueInitWithItems,
                    (IMP *)&origQueueInitWithItems);
         BCHSwizzle(queue,@selector(insertItem:afterItem:),(IMP)BCHQueueInsertItem,
@@ -427,7 +479,7 @@ __attribute__((constructor)) static void BCHLoad(void) {
         } else {
             NSLog(@"[BCHDualVolume] CentredVolumeView not found");
         }
-        NSLog(@"[BCHDualVolume] v2 transparent system/app touch surface loaded, gain %f",
+        NSLog(@"[BCHDualVolume] v4 direct mute + queue init diagnostics, gain %f",
               gAppGain);
     }
 }
