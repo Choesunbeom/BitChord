@@ -46,63 +46,32 @@ extension NowPlayingView {
         return "-\(Self.timestamp(max(0, controller.duration - controller.position)))"
     }
 
-    /// The iOS volume row: upstream `VolumeRow` in the hairline capsule style
-    /// of `ThinSlider`, bound to the controller's volume with the system
-    /// speaker icons either side. The hardware buttons route through the same
-    /// system volume this writes, so the two never disagree.
+    /// White: iOS system volume. Orange: BitChord-only gain.
+    /// Drag normally to adjust system output, or press for 0.42 s until
+    /// haptic feedback, then drag to adjust music gain without touching iOS.
+    #if os(iOS)
     var deckVolumeRow: some View {
         HStack(spacing: 10) {
-            Image(systemName: controller.volume == 0 ? "speaker.slash.fill" : "speaker.fill")
+            Image(systemName: "speaker.fill")
                 .scaledFont(size: 12, weight: .semibold)
                 .foregroundStyle(.white.opacity(0.7))
                 .frame(width: 16, height: 16)
                 .playerGlyph()
-            GeometryReader { geo in
-                let w = max(geo.size.width, 1)
-                let x = w * min(max(controller.volume, 0), 1)
-                ZStack(alignment: .leading) {
-                    let trackHeight: CGFloat = volumeDragging ? 10 : 6
-                    Capsule()
-                        .fill(.white.opacity(0.22))
-                        .frame(height: trackHeight)
-                    Capsule()
-                        .fill(.white.opacity(0.75))
-                        .frame(width: max(trackHeight, x), height: trackHeight)
-                    Circle()
-                        .fill(.white)
-                        .frame(width: 10, height: 10)
-                        .offset(x: min(max(0, x - 5), w - 10))
-                        .shadow(color: .black.opacity(0.35), radius: 2, y: 1)
-                }
-                .frame(height: geo.size.height)
-                .contentShape(.rect)
-                .gesture(
-                    DragGesture(minimumDistance: 0)
-                        .onChanged { g in
-                            volumeDragging = true
-                            controller.volume = min(max(0, g.location.x / w), 1)
-                        }
-                        .onEnded { _ in volumeDragging = false }
-                )
-            }
-            .frame(height: 14)
+
+            DualVolumeControl(appVolume: Binding(
+                get: { controller.volume },
+                set: { controller.volume = $0 }
+            ))
+            .frame(height: 28)
+
             Image(systemName: "speaker.wave.3.fill")
                 .scaledFont(size: 12, weight: .semibold)
                 .foregroundStyle(.white.opacity(0.7))
                 .frame(width: 16, height: 16)
                 .playerGlyph()
         }
-        .accessibilityElement()
-        .accessibilityLabel("Volume")
-        .accessibilityValue("\(Int(controller.volume * 100)) percent")
-        .accessibilityAdjustableAction { direction in
-            switch direction {
-            case .increment: controller.volume = min(1, controller.volume + 0.1)
-            case .decrement: controller.volume = max(0, controller.volume - 0.1)
-            default: break
-            }
-        }
     }
+    #endif
 
     /// Music's order: shuffle · previous · play-in-circle · next · repeat.
     /// Play sits on a white disc so it never disappears into a bright wash.
