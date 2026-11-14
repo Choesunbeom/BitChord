@@ -188,8 +188,15 @@ final class PlaybackController {
 
     /// Where the volume slider sits, 0…1 — a position, not an amplitude. See
     /// `outputGain(forVolume:)` for what the output is multiplied by.
-    var volume: Double = 0.9 {
-        didSet { applyOutputGain() }
+    // Saved BitChord-only gain: never writes the system volume.
+    var volume: Double = {
+        let stored = UserDefaults.standard.object(forKey: "bitchord_local_volume") as? Double ?? 0.9
+        return min(max(stored, 0), 1)
+    }() {
+        didSet {
+            UserDefaults.standard.set(volume, forKey: "bitchord_local_volume")
+            applyOutputGain()
+        }
     }
 
     /// The amplitude a slider position stands for.
