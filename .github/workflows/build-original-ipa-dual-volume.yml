@@ -31,8 +31,10 @@ jobs:
             -install_name '@executable_path/Frameworks/BitChordDualVolume.dylib' \
             -Wl,-undefined,dynamic_lookup \
             -framework Foundation -framework UIKit -framework AVFoundation \
-            -framework QuartzCore \
+            -framework QuartzCore -framework MediaToolbox -framework AudioToolbox \
             Experimental/OriginalIPA/BitChordDualVolume.m \
+            Experimental/OriginalIPA/AudioTapGain.m \
+            Experimental/OriginalIPA/fishhook.c \
             -o BitChordDualVolume.dylib
           file BitChordDualVolume.dylib
           xcrun otool -L BitChordDualVolume.dylib
