@@ -420,6 +420,14 @@ __attribute__((constructor)) static void BCHLoad(void) {
         } else if ([defaults objectForKey:kBCHGainKey]) {
             gAppGain=BCHClamp([defaults floatForKey:kBCHGainKey]);
         }
+        // v6 switches to real PCM attenuation; start at normal loudness
+        // once so a saved 0% from the previously broken UI cannot surprise
+        // users with silence before they touch the slider.
+        if (![defaults boolForKey:@"com.choesunbeom.BitChord.dualVolume.v6PCMReset"]) {
+            gAppGain=1.0f;
+            [defaults setFloat:gAppGain forKey:kBCHGainKey];
+            [defaults setBool:YES forKey:@"com.choesunbeom.BitChord.dualVolume.v6PCMReset"];
+        }
         // Leave AVPlayer class entirely untouched. This is critical:
         // original playback/crossfade runs through MTAudioProcessingTap, not
         // AVPlayer.volume; overriding native setters caused v4 silence.
