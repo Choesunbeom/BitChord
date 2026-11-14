@@ -24,6 +24,12 @@ static void (*origSetVolume)(id, SEL, float);
 static float (*origGetVolume)(id, SEL);
 static void (*origPlay)(id, SEL);
 static void (*origPlayRate)(id, SEL, float);
+static id (*origPlayerInit)(id, SEL);
+static id (*origInitWithPlayerItem)(id, SEL, AVPlayerItem *);
+static id (*origQueueInitWithItems)(id, SEL, NSArray<AVPlayerItem *> *);
+static void (*origSetRate)(id, SEL, float);
+static void (*origReplaceItem)(id, SEL, AVPlayerItem *);
+static void (*origQueueInsert)(id, SEL, AVPlayerItem *, AVPlayerItem *);
 static void (*origLayout)(id, SEL);
 static void (*origDidMoveToWindow)(id, SEL);
 
@@ -70,12 +76,43 @@ static void BCHPlayRate(id self, SEL cmd, float value) {
     BCHRegisterPlayer(self);
     if (origPlayRate) origPlayRate(self, cmd, value);
 }
+// Catch real playback deck creation as well as play()/rate changes.
+ // BitChord-KR has multiple AVQueuePlayer decks and can start playback by
+ // setting rate directly. Its app-only volume never reached those objects in v2.
+static id BCHPlayerInit(id self, SEL cmd) {
+    id result = origPlayerInit ? origPlayerInit(self,cmd) : nil;
+    if (result) BCHRegisterPlayer(result);
+    return result;
+}
+static id BCHInitWithItem(id self, SEL cmd, AVPlayerItem *item) {
+    id result=origInitWithPlayerItem?origInitWithPlayerItem(self,cmd,item):nil;
+    if (result) BCHRegisterPlayer(result);
+    return result;
+}
+static id BCHQueueInitWithItems(id self, SEL cmd, NSArray<AVPlayerItem*> *items) {
+    id result=origQueueInitWithItems?origQueueInitWithItems(self,cmd,items):nil;
+    if (result) BCHRegisterPlayer(result);
+    return result;
+}
+static void BCHSetRate(id self,SEL cmd,float rate) {
+    BCHRegisterPlayer(self);
+    if(origSetRate)origSetRate(self,cmd,rate);
+}
+static void BCHReplaceItem(id self,SEL cmd,AVPlayerItem *item) {
+    BCHRegisterPlayer(self);
+    if(origReplaceItem)origReplaceItem(self,cmd,item);
+}
+static void BCHQueueInsertItem(id self,SEL cmd,AVPlayerItem *item,AVPlayerItem *after) {
+    BCHRegisterPlayer(self);
+    if(origQueueInsert)origQueueInsert(self,cmd,item,after);
+}
 static void BCHUpdateAppGain(float value) {
     gAppGain = BCHClamp(value);
     [[NSUserDefaults standardUserDefaults] setFloat:gAppGain forKey:kBCHGainKey];
     NSArray<AVPlayer *> *players;
     @synchronized (gActivePlayers) { players = [gActivePlayers.allObjects copy]; }
     for (AVPlayer *player in players) BCHApplyToPlayer(player);
+    NSLog(@"[BCHDualVolume] gain=%.3f active AVPlayers=%lu",gAppGain,(unsigned long)players.count);
     [[NSNotificationCenter defaultCenter] postNotificationName:@"BCHDualVolumeUpdated" object:nil];
 }
 
@@ -368,6 +405,19 @@ __attribute__((constructor)) static void BCHLoad(void) {
                    (IMP *)&origPlay);
         BCHSwizzle(player, @selector(playImmediatelyAtRate:), (IMP)BCHPlayRate,
                    (IMP *)&origPlayRate);
+        BCHSwizzle(player, @selector(init), (IMP)BCHPlayerInit,
+                   (IMP *)&origPlayerInit);
+        BCHSwizzle(player, @selector(initWithPlayerItem:), (IMP)BCHInitWithItem,
+                   (IMP *)&origInitWithPlayerItem);
+        BCHSwizzle(player, @selector(setRate:), (IMP)BCHSetRate,
+                   (IMP *)&origSetRate);
+        BCHSwizzle(player, @selector(replaceCurrentItemWithPlayerItem:),
+                   (IMP)BCHReplaceItem,(IMP *)&origReplaceItem);
+        Class queue=AVQueuePlayer.class;
+        BCHSwizzle(queue,@selector(initWithItems:),(IMP)BCHQueueInitWithItems,
+                   (IMP *)&origQueueInitWithItems);
+        BCHSwizzle(queue,@selector(insertItem:afterItem:),(IMP)BCHQueueInsertItem,
+                   (IMP *)&origQueueInsert);
         Class view = objc_getClass("_TtC8BitChord17CentredVolumeView");
         if (view) {
             BCHSwizzle(view, @selector(layoutSubviews), (IMP)BCHLayoutHook,
