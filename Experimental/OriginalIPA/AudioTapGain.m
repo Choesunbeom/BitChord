@@ -122,7 +122,7 @@ static void BCHTapFinalize(MTAudioProcessingTapRef tap) {
 static OSStatus BCHTapCreate(CFAllocatorRef allocator,
        const MTAudioProcessingTapCallbacks *callbacks,
        MTAudioProcessingTapCreationFlags flags, MTAudioProcessingTapRef *tapOut) {
-    if (!gOriginalTapCreate) return kMTAudioProcessingTapErr_InvalidArgument;
+    if (!gOriginalTapCreate) return paramErr;
     if (!callbacks || !callbacks->process || !tapOut)
         return gOriginalTapCreate(allocator,callbacks,flags,tapOut);
 
