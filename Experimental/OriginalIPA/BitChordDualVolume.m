@@ -15,6 +15,10 @@
 // A 0.42s hold switches to app-only AVPlayer gain and gives one haptic.
 // The original AVAudioSession/mixWithOthers configuration is untouched.
 
+extern void BCHTapSetGain(float value);
+extern void BCHTapInstall(void);
+extern void BCHTapGetStats(unsigned int *created, unsigned int *hits, unsigned int *attenuated);
+
 static NSString *const kBCHGainKey = @"com.choesunbeom.BitChord.dualVolume.gain";
 static const void *kBCHBaseGainKey = &kBCHBaseGainKey;
 static const void *kBCHOverlayKey = &kBCHOverlayKey;
@@ -109,10 +113,9 @@ static void BCHQueueInsertItem(id self,SEL cmd,AVPlayerItem *item,AVPlayerItem *
 static void BCHUpdateAppGain(float value) {
     gAppGain = BCHClamp(value);
     [[NSUserDefaults standardUserDefaults] setFloat:gAppGain forKey:kBCHGainKey];
-    NSArray<AVPlayer *> *players;
-    @synchronized (gActivePlayers) { players = [gActivePlayers.allObjects copy]; }
-    for (AVPlayer *player in players) BCHApplyToPlayer(player);
-    NSLog(@"[BCHDualVolume] gain=%.3f active AVPlayers=%lu",gAppGain,(unsigned long)players.count);
+    // No changes to AVPlayer.volume or AVPlayer.muted. Those setters bypass
+    // BitChord's MTAudioProcessingTap source pipeline. Scale its PCM output.
+    BCHTapSetGain(gAppGain);
     [[NSNotificationCenter defaultCenter] postNotificationName:@"BCHDualVolumeUpdated" object:nil];
 }
 
@@ -258,15 +261,11 @@ typedef NS_ENUM(NSInteger, BCHTouchMode) {
     self.orangeDot.cornerRadius = dot/2;
     // Diagnostic only: read the ACTUAL AVPlayer output volume after applying gain.
     // This does not change native AVPlayer.muted or the audio session.
-    NSArray<AVPlayer *> *decks;
-    @synchronized(gActivePlayers){decks=[gActivePlayers.allObjects copy];}
-    float observed=-1;
-    for(AVPlayer *deck in decks) {
-        if(origGetVolume) { observed=origGetVolume(deck,@selector(volume)); break; }
-    }
+    unsigned int taps=0, hits=0, applied=0;
+    BCHTapGetStats(&taps,&hits,&applied);
     self.volumeDiagnostics.frame=CGRectMake(0,MAX(0,centerY-27),self.bounds.size.width,16);
-    self.volumeDiagnostics.string=[NSString stringWithFormat:@"BitChord %d%% · 재생기 %lu · 엔진 %.2f",
-               (int)roundf(gain*100),(unsigned long)decks.count,observed];
+    self.volumeDiagnostics.string=[NSString stringWithFormat:@"BitChord %d%% · TAP %u · PCM %u",
+               (int)roundf(gain*100),taps,applied];
     self.volumeDiagnostics.hidden=self.mode != BCHTouchApp;
     self.accessibilityValue =
         [NSString stringWithFormat:@"BitChord %d percent", (int)roundf(gain*100)];
@@ -421,28 +420,11 @@ __attribute__((constructor)) static void BCHLoad(void) {
         } else if ([defaults objectForKey:kBCHGainKey]) {
             gAppGain=BCHClamp([defaults floatForKey:kBCHGainKey]);
         }
-        Class player = AVPlayer.class;
-        BCHSwizzle(player, @selector(setVolume:), (IMP)BCHSetVolume,
-                   (IMP *)&origSetVolume);
-        BCHSwizzle(player, @selector(volume), (IMP)BCHGetVolume,
-                   (IMP *)&origGetVolume);
-        BCHSwizzle(player, @selector(play), (IMP)BCHPlay,
-                   (IMP *)&origPlay);
-        BCHSwizzle(player, @selector(playImmediatelyAtRate:), (IMP)BCHPlayRate,
-                   (IMP *)&origPlayRate);
-        BCHSwizzle(player, @selector(init), (IMP)BCHPlayerInit,
-                   (IMP *)&origPlayerInit);
-        BCHSwizzle(player, @selector(initWithPlayerItem:), (IMP)BCHInitWithItem,
-                   (IMP *)&origInitWithPlayerItem);
-        BCHSwizzle(player, @selector(setRate:), (IMP)BCHSetRate,
-                   (IMP *)&origSetRate);
-        BCHSwizzle(player, @selector(replaceCurrentItemWithPlayerItem:),
-                   (IMP)BCHReplaceItem,(IMP *)&origReplaceItem);
-        Class queue=AVQueuePlayer.class;
-        BCHSwizzle(queue,@selector(initWithItems:),(IMP)BCHQueueInitWithItems,
-                   (IMP *)&origQueueInitWithItems);
-        BCHSwizzle(queue,@selector(insertItem:afterItem:),(IMP)BCHQueueInsertItem,
-                   (IMP *)&origQueueInsert);
+        // Leave AVPlayer class entirely untouched. This is critical:
+        // original playback/crossfade runs through MTAudioProcessingTap, not
+        // AVPlayer.volume; overriding native setters caused v4 silence.
+        BCHTapSetGain(gAppGain);
+        BCHTapInstall();
         Class view = objc_getClass("_TtC8BitChord17CentredVolumeView");
         if (view) {
             BCHSwizzle(view, @selector(layoutSubviews), (IMP)BCHLayoutHook,
@@ -452,7 +434,7 @@ __attribute__((constructor)) static void BCHLoad(void) {
         } else {
             NSLog(@"[BCHDualVolume] CentredVolumeView not found");
         }
-        NSLog(@"[BCHDualVolume] v5 playback restore without AVPlayer.muted override; gain=%f",
+        NSLog(@"[BCHDualVolume] v6 PCM post-tap attenuation active; gain=%f",
               gAppGain);
     }
 }
